@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10152d">
+  <title>Pixel Flyer — Retro Arcade</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f3d7;
+      --muted: #a6b0d4;
+      --cyan: #55f6e7;
+      --yellow: #ffe66d;
+      --panel: #171f3e;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      padding: 20px 14px max(20px, env(safe-area-inset-bottom));
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(ellipse at 50% 0%, #26335e 0%, #151c3b 42%, #0b1023 100%);
+      color: var(--ink);
+      font-family: "Courier New", monospace;
+    }
+    .shell { width: min(100%, 480px); text-align: center; }
+    .eyebrow {
+      margin: 0 0 7px;
+      color: var(--cyan);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .25em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      color: var(--yellow);
+      font-size: clamp(30px, 8vw, 48px);
+      line-height: 1;
+      letter-spacing: .04em;
+      text-shadow: 3px 3px 0 #d45b78, 6px 6px 0 #090d1e;
+    }
+    .subtitle { margin: 12px 0 17px; color: var(--muted); font-size: 12px; }
+    .game-frame {
+      position: relative;
+      width: min(100%, 420px);
+      margin: 0 auto;
+      padding: 8px;
+      border: 3px solid var(--cyan);
+      border-radius: 10px;
+      background: #080d20;
+      box-shadow: 0 0 0 4px #26345d, 0 0 28px #55f6e755;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 3 / 5;
+      border-radius: 3px;
+      background: #111a3b;
+      image-rendering: pixelated;
+      touch-action: none;
+      outline: none;
+    }
+    .hud {
+      width: min(100%, 420px);
+      margin: 14px auto 0;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .stat {
+      flex: 1;
+      padding: 10px 8px;
+      border: 1px solid #394873;
+      border-radius: 6px;
+      background: #111832cc;
+    }
+    .stat-label { display: block; color: var(--muted); font-size: 10px; letter-spacing: .13em; }
+    .stat-value { display: block; margin-top: 4px; color: var(--yellow); font-size: 21px; font-weight: 700; }
+    .help { margin: 15px 0 0; color: var(--muted); font-size: 11px; line-height: 1.8; }
+    .help strong { color: var(--cyan); }
+    .footer { margin-top: 14px; color: #7480a8; font-size: 10px; letter-spacing: .08em; }
+    @media (max-width: 480px) {
+      body { padding: 13px 10px max(14px, env(safe-area-inset-bottom)); }
+      .subtitle { margin: 9px 0 13px; }
+      .game-frame { padding: 6px; }
+      .help { margin-top: 12px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <p class="eyebrow">★ 8-bit arcade challenge ★</p>
+    <h1>PIXEL FLYER</h1>
+    <p class="subtitle">DODGE THE PIPES · BEAT YOUR BEST</p>
+
+    <section class="game-frame" aria-label="Pixel Flyer game">
+      <canvas id="game" width="420" height="700" tabindex="0"
+        role="img" aria-label="Pixel Flyer. Tap or press Space to flap and avoid the pipes.">
+        Your browser does not support the HTML canvas element.
+      </canvas>
+    </section>
+
+    <div class="hud" aria-live="polite">
+      <div class="stat"><span class="stat-label">SCORE</span><span class="stat-value" id="score">0</span></div>
+      <div class="stat"><span class="stat-label">BEST</span><span class="stat-value" id="best">0</span></div>
+    </div>
+    <p class="help"><strong>TAP</strong> / <strong>CLICK</strong> / <strong>SPACE</strong> TO FLAP<br>Don't hit the pipes or the floor!</p>
+    <p class="footer">INSERT COIN? &nbsp; NOPE. JUST FLY.</p>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const scoreEl = document.getElementById("score");
+      const bestEl = document.getElementById("best");
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const FLOOR_Y = 650;
+      const PIPE_W = 76;
+      const PIPE_GAP = 178;
+      const PIPE_SPEED = 190;
+      const GRAVITY = 1450;
+      const FLAP_POWER = -440;
+
+      let state = "ready"; // ready, playing, over
+      let bird;
+      let pipes = [];
+      let score = 0;
+      let best = loadBest();
+      let spawnTimer = 0;
+      let lastTime = 0;
+      let elapsed = 0;
+      let groundOffset = 0;
+
+      bestEl.textContent = best;
+
+      function loadBest() {
+        try { return Number(localStorage.getItem("pixelFlyerBest")) || 0; }
+        catch (_) { return 0; }
+      }
+
+      function saveBest() {
+        try { localStorage.setItem("pixelFlyerBest", String(best)); }
+        catch (_) { /* Game still works if storage is unavailable. */ }
+      }
+
+      function resetGame() {
+        bird = { x: 112, y: 330, vy: 0, rotation: 0 };
+        pipes = [];
+        score = 0;
+        spawnTimer = 0.75;
+        elapsed = 0;
+        scoreEl.textContent = "0";
+        state = "ready";
+      }
+
+      function startGame() {
+        if (state === "over") resetGame();
+        state = "playing";
+        flap();
+      }
+
+      function flap() {
+        bird.vy = FLAP_POWER;
+      }
+
+      function handleAction() {
+        if (state === "ready") {
+          startGame();
+        } else if (state === "playing") {
+          flap();
+        } else {
+          resetGame();
+          startGame();
+        }
+      }
+
+      function addPipe() {
+        const margin = 95;
+        const gapCenter = margin + Math.random() * (FLOOR_Y - PIPE_GAP - margin * 2) + PIPE_GAP / 2;
+        pipes.push({ x: W + 12, gapTop: gapCenter - PIPE_GAP / 2, scored: false });
+      }
+
+      function endGame() {
+        state = "over";
+        if (score > best) {
+          best = score;
+          bestEl.textContent = best;
+          saveBest();
+        }
+      }
+
+      function overlapsBirdRect(rx, ry, rw, rh) {
+        // Slightly inset hitbox makes collisions feel fair.
+        const bx = bird.x - 13, by = bird.y - 12, bw = 27, bh = 24;
+        return bx < rx + rw && bx + bw > rx && by < ry + rh && by + bh > ry;
+      }
+
+      function update(dt) {
+        elapsed += dt;
+        groundOffset = (groundOffset + PIPE_SPEED * dt) % 48;
+
+        if (state === "ready") {
+          bird.y = 330 + Math.sin(elapsed * 3) * 8;
+          bird.rotation = Math.sin(elapsed * 3) * 0.04;
+          return;
+        }
+        if (state !== "playing") return;
+
+        bird.vy += GRAVITY * dt;
+        bird.y += bird.vy * dt;
+        bird.rotation = Math.max(-0.45, Math.min(1.05, bird.vy / 650));
+
+        spawnTimer -= dt;
+        if (spawnTimer <= 0) {
+          addPipe();
+          spawnTimer = 1.55;
+        }
+
+        for (const pipe of pipes) {
+          pipe.x -= PIPE_SPEED * dt;
+          const topHeight = pipe.gapTop;
+          const bottomY = pipe.gapTop + PIPE_GAP;
+
+          if (overlapsBirdRect(pipe.x, 0, PIPE_W, topHeight) ||
+              overlapsBirdRect(pipe.x, bottomY, PIPE_W, FLOOR_Y - bottomY)) {
+            endGame();
+            return;
+          }
+
+          if (!pipe.scored && pipe.x + PIPE_W < bird.x) {
+            pipe.scored = true;
+            score += 1;
+            scoreEl.textContent = score;
+          }
+        }
+
+        pipes = pipes.filter(pipe => pipe.x + PIPE_W > -10);
+
+        if (bird.y - 14 < 0 || bird.y + 14 >= FLOOR_Y) endGame();
+      }
+
+      function pixelText(text, x, y, size, color, align = "center") {
+        ctx.save();
+        ctx.font = `bold ${size}px "Courier New", monospace`;
+        ctx.textAlign = align;
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#080d20";
+        ctx.fillText(text, x + 2, y + 3);
+        ctx.fillStyle = color;
+        ctx.fillText(text, x, y);
+        ctx.restore();
+      }
+
+      function drawBackground() {
+        const gradient = ctx.createLinearGradient(0, 0, 0, FLOOR_Y);
+        gradient.addColorStop(0, "#17264f");
+        gradient.addColorStop(1, "#263a65");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, W, H);
+
+        // Pixel stars
+        ctx.fillStyle = "#b6e7ed";
+        for (let i = 0; i < 34; i++) {
+          const x = (i * 83 + 23) % W;
+          const y = (i * 47 + 31) % 420;
+          const size = i % 5 === 0 ? 3 : 2;
+          ctx.globalAlpha = 0.35 + (i % 4) * 0.15;
+          ctx.fillRect(x, y, size, size);
+        }
+        ctx.globalAlpha = 1;
+
+        // Distant pixel skyline
+        ctx.fillStyle = "#1c2d55";
+        for (let x = 0; x < W; x += 54) {
+          const h = 45 + ((x * 7) % 55);
+          ctx.fillRect(x, FLOOR_Y - h, 38, h);
+          ctx.fillStyle = "#30466e";
+          ctx.fillRect(x + 8, FLOOR_Y - h + 12, 5, 5);
+          ctx.fillRect(x + 23, FLOOR_Y - h + 26, 5, 5);
+          ctx.fillStyle = "#1c2d55";
+        }
+      }
+
+      function drawPipe(pipe) {
+        const x = Math.round(pipe.x);
+        const topH = Math.round(pipe.gapTop);
+        const bottomY = Math.round(pipe.gapTop + PIPE_GAP);
+
+        // Pipe bodies
+        ctx.fillStyle = "#37c96b";
+        ctx.fillRect(x + 7, 0, PIPE_W - 14, topH - 16);
+        ctx.fillRect(x + 7, bottomY + 16, PIPE_W - 14, FLOOR_Y - bottomY - 16);
+
+        // Bright highlights and dark pixel shadows
+        ctx.fillStyle = "#8aff8a";
+        ctx.fillRect(x + 12, 0, 8, topH - 16);
+        ctx.fillRect(x + 12, bottomY + 16, 8, FLOOR_Y - bottomY - 16);
+        ctx.fillStyle = "#16834d";
+        ctx.fillRect(x + PIPE_W - 22, 0, 8, topH - 16);
+        ctx.fillRect(x + PIPE_W - 22, bottomY + 16, 8, FLOOR_Y - bottomY - 16);
+
+        // Caps
+        ctx.fillStyle = "#5cf07b";
+        ctx.fillRect(x, topH - 16, PIPE_W, 16);
+        ctx.fillRect(x, bottomY, PIPE_W, 16);
+        ctx.fillStyle = "#a0ff91";
+        ctx.fillRect(x + 5, topH - 13, PIPE_W - 10, 4);
+        ctx.fillRect(x + 5, bottomY + 3, PIPE_W - 10, 4);
+        ctx.fillStyle = "#17643f";
+        ctx.fillRect(x, topH - 3, PIPE_W, 3);
+        ctx.fillRect(x, bottomY + 13, PIPE_W, 3);
+      }
+
+      function drawBird() {
+        ctx.save();
+        ctx.translate(bird.x, bird.y);
+        ctx.rotate(bird.rotation);
+
+        // Shadow
+        ctx.fillStyle = "#11152a";
+        ctx.fillRect(-15, 13, 31, 5);
+
+        // Tail
+        ctx.fillStyle = "#e7a83f";
+        ctx.fillRect(-20, -3, 8, 8);
+        ctx.fillRect(-25, -7, 6, 7);
+
+        // Body
+        ctx.fillStyle = "#ffe66d";
+        ctx.fillRect(-15, -12, 27, 24);
+        ctx.fillRect(-10, -16, 18, 4);
+        ctx.fillRect(-10, 12, 18, 4);
+        ctx.fillStyle = "#f6bd4b";
+        ctx.fillRect(-15, 5, 23, 7);
+
+        // Wing animation
+        ctx.fillStyle = "#fff3a1";
+        const wingY = state === "playing" && bird.vy > 100 ? 3 : -3;
+        ctx.fillRect(-9, wingY, 14, 8);
+        ctx.fillRect(-5, wingY - 4, 10, 5);
+
+        // Eye and beak
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(4, -9, 8, 9);
+        ctx.fillStyle = "#18203b";
+        ctx.fillRect(9, -7, 3, 4);
+        ctx.fillStyle = "#ff875e";
+        ctx.fillRect(10, 0, 13, 6);
+        ctx.fillRect(13, 6, 8, 3);
+
+        // Tiny feet
+        ctx.fillStyle = "#ff875e";
+        ctx.fillRect(-7, 14, 4, 4);
+        ctx.fillRect(3, 14, 4, 4);
+        ctx.restore();
+      }
+
+      function drawGround() {
+        ctx.fillStyle = "#d8c46a";
+        ctx.fillRect(0, FLOOR_Y, W, 8);
+        ctx.fillStyle = "#6cce72";
+        ctx.fillRect(0, FLOOR_Y + 8, W, 12);
+        ctx.fillStyle = "#b08b49";
+        ctx.fillRect(0, FLOOR_Y + 20, W, H - FLOOR_Y - 20);
+        ctx.fillStyle = "#f0d47b";
+        for (let x = -48 + groundOffset; x < W + 48; x += 48) {
+          ctx.fillRect(x, FLOOR_Y + 24, 22, 5);
+          ctx.fillRect(x + 17, FLOOR_Y + 38, 18, 5);
+        }
+      }
+
+      function drawOverlay() {
+        if (state === "ready") {
+          ctx.fillStyle = "#080d20bb";
+          ctx.fillRect(35, 235, W - 70, 205);
+          ctx.strokeStyle = "#55f6e7";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(35, 235, W - 70, 205);
+          pixelText("READY PLAYER?", W / 2, 278, 23, "#ffe66d");
+          pixelText("TAP TO START", W / 2, 333, 20, "#55f6e7");
+          pixelText("THEN TAP TO FLY", W / 2, 371, 13, "#f7f3d7");
+          pixelText("AVOID THE PIPES!", W / 2, 402, 12, "#a6b0d4");
+        } else if (state === "over") {
+          ctx.fillStyle = "#080d20dd";
+          ctx.fillRect(35, 225, W - 70, 245);
+          ctx.strokeStyle = "#ff718b";
+          ctx.lineWidth = 3;
+          ctx.strokeRect(35, 225, W - 70, 245);
+          pixelText("GAME OVER", W / 2, 270, 30, "#ff718b");
+          pixelText(`SCORE: ${score}`, W / 2, 326, 20, "#ffe66d");
+          pixelText(`BEST: ${best}`, W / 2, 360, 16, "#55f6e7");
+          pixelText("TAP TO PLAY AGAIN", W / 2, 420, 15, "#f7f3d7");
+        }
+      }
+
+      function render() {
+        drawBackground();
+        for (const pipe of pipes) drawPipe(pipe);
+        drawBird();
+        drawGround();
+        drawOverlay();
+      }
+
+      function loop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        const dt = Math.min((timestamp - lastTime) / 1000, 0.035);
+        lastTime = timestamp;
+        update(dt);
+        render();
+        requestAnimationFrame(loop);
+      }
+
+      canvas.addEventListener("pointerdown", event => {
+        event.preventDefault();
+        handleAction();
+      });
+
+      // Mac/PC keyboard controls. Capture at window level so the game
+      // receives keys even when the canvas is not focused.
+      window.addEventListener("keydown", event => {
+        const isSpace =
+          event.code === "Space" || event.key === " " ||
+          event.key === "Spacebar" || event.keyCode === 32;
+        const isUp =
+          event.code === "ArrowUp" || event.key === "ArrowUp" ||
+          event.keyCode === 38;
+
+        if (!isSpace && !isUp) return;
+
+        event.preventDefault();
+
+        if (event.repeat) {
+          // Holding Space/Up gives repeated flaps while playing.
+          if (state === "playing") flap();
+          return;
+        }
+
+        handleAction();
+      }, true);
+
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden && state === "playing") state = "ready";
+      });
+
+      resetGame();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
